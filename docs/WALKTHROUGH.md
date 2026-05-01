@@ -32,6 +32,7 @@ cp .env.example .env.local
 | 変数 | 必須 | 説明 |
 |------|------|------|
 | `GEMINI_API_KEY` | はい | Gemini API キー |
+| `GEMINI_BRIEF_MODEL` | いいえ | 既定: `gemini-2.5-flash`（「要約して反映」用。403/404 時は [モデル一覧](https://ai.google.dev/gemini-api/docs/models) で利用可能な名前に変更） |
 | `GEMINI_LIVE_MODEL` | いいえ | 既定: `gemini-2.0-flash-live-001`（テキスト応答。公式のモデル一覧が変わったら更新） |
 | `LIVE_PROXY_PORT` | いいえ | 既定: `3001` |
 | `NEXT_PUBLIC_LIVE_WS_URL` | いいえ | 既定: `ws://localhost:3001` |
@@ -56,8 +57,16 @@ npm run dev
 
 1. セクション **「1. 準備ドキュメント」** に、職務経歴・志望動機・想定 Q&A など **長めの下書き**を貼り付けます。
 2. **「要約してナレッジに反映」** をクリックします。  
-   - 裏で `POST /api/brief` が動き、`gemini-2.0-flash` が **面談用の短いナレッジ**に圧縮します。
+   - 裏で `POST /api/brief` が動き、環境変数 `GEMINI_BRIEF_MODEL`（未設定時は `gemini-2.5-flash`）で **面談用の短いナレッジ**に圧縮します。
 3. セクション **「2. 面談ナレッジ」** に結果が入ります。**そのまま手編集しても構いません**（重要事実の修正・追記はここで）。
+
+**要約結果が空・エラーが出る場合**
+
+- 画面上部（ボタンの上）に **赤いエラーメッセージ**が出ます。ここに API の理由が載ります。
+- `.env.local` に **`GEMINI_API_KEY`** があり、`npm run dev` を **キーを保存したあと**に起動し直したか確認する。
+- **`gemini-2.0-flash` は提供終了に近い／終了している**ことがあります。`.env.local` に  
+  `GEMINI_BRIEF_MODEL=gemini-2.5-flash` または [モデル一覧](https://ai.google.dev/gemini-api/docs/models) の利用可能な Flash 系を指定する。
+- ターミナルの Next ログに `[api/brief]` のエラーが出ていないか確認する。
 
 ### 3.2 Live セッションを開く
 

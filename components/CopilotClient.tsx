@@ -5,10 +5,15 @@ import {
   downsampleBuffer,
   floatTo16BitPCM,
 } from "@/lib/audioPcm";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 const liveWsUrl = () =>
   process.env.NEXT_PUBLIC_LIVE_WS_URL ?? "ws://localhost:3001";
+
+function staggerStyle(i: number): CSSProperties | undefined {
+  if (i === 0) return undefined;
+  return { animationDelay: `${i * 75}ms` };
+}
 
 export function CopilotClient() {
   const [rawDoc, setRawDoc] = useState("");
@@ -21,6 +26,7 @@ export function CopilotClient() {
   const [answer, setAnswer] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const [micOn, setMicOn] = useState(false);
+  const [briefError, setBriefError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const micOnRef = useRef(false);
@@ -35,18 +41,43 @@ export function CopilotClient() {
 
   const runBrief = async () => {
     setBriefLoading(true);
+    setBriefError(null);
     try {
       const res = await fetch("/api/brief", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rawText: rawDoc }),
       });
-      const data: { brief?: string; error?: string } = await res.json();
-      if (!res.ok) throw new Error(data.error ?? res.statusText);
-      setKnowledgeBrief(data.brief ?? "");
-      appendLog("要約ナレッジを更新しました");
+
+      const rawBody = await res.text();
+      let data: { brief?: string; error?: string; modelUsed?: string } = {};
+      try {
+        data = JSON.parse(rawBody) as typeof data;
+      } catch {
+        throw new Error(
+          res.ok
+            ? "サーバー応答が JSON ではありません。開発サーバー（npm run dev）を起動し直してください。"
+            : `HTTP ${res.status}: ${rawBody.slice(0, 200)}`,
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+
+      const brief = data.brief ?? "";
+      if (!brief.trim()) {
+        throw new Error("要約テキストが空です。API の応答をログに確認してください。");
+      }
+
+      setKnowledgeBrief(brief);
+      appendLog(
+        `要約ナレッジを更新しました（${brief.length} 文字${data.modelUsed ? ` / ${data.modelUsed}` : ""}）`,
+      );
     } catch (e) {
-      appendLog(`要約エラー: ${e instanceof Error ? e.message : e}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      setBriefError(msg);
+      appendLog(`要約エラー: ${msg}`);
     } finally {
       setBriefLoading(false);
     }
@@ -213,158 +244,208 @@ export function CopilotClient() {
   }, [stopSession]);
 
   return (
-    <div className="flex flex-col gap-8">
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)]/80 p-5 shadow-lg backdrop-blur">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--muted)]">
-          1. 準備ドキュメント
-        </h2>
-        <p className="mt-1 text-xs text-[var(--muted)]">
-          長文を貼り付け、「要約して反映」で Gemini が面談用ナレッジに圧縮します（右上のナレッジ欄を直接編集しても構いません）。
-        </p>
+    <div className="flex flex-col gap-8 md:gap-10">
+      <section className="copilot-card animate-fade-rise p-5 md:p-6">
+        <div className="flex flex-wrap items-start gap-3">
+          <span className="step-badge shrink-0">1</span>
+          <div className="min-w-0 flex-1">
+            <h2 className="font-display text-lg font-semibold text-[var(--text)]">
+              準備ドキュメント
+            </h2>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted)] md:text-sm">
+              長文を貼り付け、「要約して反映」でナレッジに圧縮します。生成後のテキストは次のステップでそのまま編集できます。
+            </p>
+          </div>
+        </div>
         <textarea
           value={rawDoc}
-          onChange={(e) => setRawDoc(e.target.value)}
+          onChange={(e) => {
+            setRawDoc(e.target.value);
+            setBriefError(null);
+          }}
           placeholder="職務経歴・志望動機・想定QA など..."
           rows={8}
-          className="mt-3 w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text)] outline-none ring-[var(--accent)] placeholder:text-[var(--muted)] focus:ring-2"
+          className="copilot-input mt-4"
         />
+        {briefError ? (
+          <p
+            className="mt-3 rounded-lg border border-[var(--danger)]/50 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[#f0c4c4]"
+            role="alert"
+          >
+            {briefError}
+          </p>
+        ) : null}
         <button
           type="button"
           onClick={() => void runBrief()}
           disabled={briefLoading || !rawDoc.trim()}
-          className="mt-3 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-dim)] disabled:opacity-40"
+          className="btn-primary mt-4"
         >
-          {briefLoading ? "要約中..." : "要約してナレッジに反映"}
+          {briefLoading ? "要約中…" : "要約してナレッジに反映"}
         </button>
       </section>
 
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)]/80 p-5 shadow-lg backdrop-blur">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--muted)]">
-          2. 面談ナレッジ（Live に渡す要約）
-        </h2>
+      <section
+        className="copilot-card animate-fade-rise p-5 md:p-6"
+        style={staggerStyle(1)}
+      >
+        <div className="flex flex-wrap items-start gap-3">
+          <span className="step-badge shrink-0">2</span>
+          <div className="min-w-0 flex-1">
+            <h2 className="font-display text-lg font-semibold text-[var(--text)]">
+              面談ナレッジ（Live に渡す要約）
+            </h2>
+          </div>
+        </div>
         <textarea
           value={knowledgeBrief}
           onChange={(e) => setKnowledgeBrief(e.target.value)}
           rows={10}
-          className="mt-3 w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text)] outline-none ring-[var(--accent)] focus:ring-2"
+          className="copilot-input mt-4"
         />
-        <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-[var(--muted)]">
+        <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm text-[var(--muted)]">
           <input
             type="checkbox"
             checked={enableInputTx}
             onChange={(e) => setEnableInputTx(e.target.checked)}
-            className="rounded border-[var(--border)]"
+            className="mt-1 accent-[var(--accent)]"
           />
-          音声入力の文字起こしも受け取る（inputAudioTranscription / 課金増の可能性あり）
+          <span>
+            音声入力の文字起こしも受け取る（
+            <code className="text-[11px] text-[var(--accent)]">
+              inputAudioTranscription
+            </code>
+            ・課金に影響することがあります）
+          </span>
         </label>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={startSession}
-            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-          >
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button type="button" onClick={startSession} className="btn-live">
             Live セッション開始
           </button>
-          <button
-            type="button"
-            onClick={stopSession}
-            className="rounded-lg border border-[var(--border)] bg-transparent px-4 py-2 text-sm text-[var(--text)] hover:bg-[var(--border)]/30"
-          >
+          <button type="button" onClick={stopSession} className="btn-ghost">
             切断
           </button>
           <span
-            className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
+            className={`inline-flex items-center rounded-full border px-3.5 py-1 text-xs font-semibold ${
               sessionActive
-                ? "bg-emerald-500/20 text-emerald-300"
-                : "bg-[var(--border)] text-[var(--muted)]"
+                ? "border-[var(--live)]/50 bg-[var(--live)]/15 text-[var(--live)]"
+                : "border-[var(--border)] text-[var(--muted)]"
             }`}
           >
-            {sessionActive ? "セッション接続中" : "未接続"}
+            <span
+              className={`mr-2 h-1.5 w-1.5 rounded-full ${
+                sessionActive ? "animate-pulse bg-[var(--live)]" : "bg-[var(--muted)]"
+              }`}
+              aria-hidden
+            />
+            {sessionActive ? "接続中" : "未接続"}
           </span>
         </div>
       </section>
 
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)]/80 p-5 shadow-lg backdrop-blur">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--muted)]">
-          3. 入力（テキスト / マイク）
-        </h2>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
+      <section
+        className="copilot-card animate-fade-rise p-5 md:p-6"
+        style={staggerStyle(2)}
+      >
+        <div className="flex flex-wrap items-start gap-3">
+          <span className="step-badge shrink-0">3</span>
           <div>
-            <label className="text-xs text-[var(--muted)]">先方の発言（メモ）</label>
+            <h2 className="font-display text-lg font-semibold text-[var(--text)]">
+              入力（テキスト / マイク）
+            </h2>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-6 md:grid-cols-2 md:gap-8">
+          <div>
+            <label className="text-xs font-medium tracking-wide text-[var(--accent)]">
+              先方の発言
+            </label>
             <textarea
               value={interviewerText}
               onChange={(e) => setInterviewerText(e.target.value)}
               rows={4}
-              className="mt-1 w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+              className="copilot-input mt-2"
             />
             <button
               type="button"
               onClick={() => sendText("interviewer")}
-              className="mt-2 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs text-white"
+              className="btn-primary mt-3 text-xs"
             >
               送信
             </button>
           </div>
           <div>
-            <label className="text-xs text-[var(--muted)]">こちらの補足メモ</label>
+            <label className="text-xs font-medium tracking-wide text-[var(--muted)]">
+              こちらの補足
+            </label>
             <textarea
               value={selfText}
               onChange={(e) => setSelfText(e.target.value)}
               rows={4}
-              className="mt-1 w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+              className="copilot-input mt-2"
             />
             <button
               type="button"
               onClick={() => sendText("self")}
-              className="mt-2 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text)]"
+              className="btn-ghost mt-3 text-xs"
             >
               補足を送る
             </button>
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] pt-6">
           {!micOn ? (
             <button
               type="button"
               onClick={() => void startMic()}
               disabled={!sessionActive}
-              className="rounded-lg bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-700 disabled:opacity-40"
+              className="btn-mic"
             >
               マイク送信開始
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={stopMic}
-              className="rounded-lg border border-violet-400 px-4 py-2 text-sm text-violet-200"
-            >
+            <button type="button" onClick={stopMic} className="btn-ghost">
               マイク停止
             </button>
           )}
         </div>
       </section>
 
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)]/80 p-5 shadow-lg backdrop-blur">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--muted)]">
-          4. 回答案（モデル出力）
-        </h2>
-        <pre className="mt-3 max-h-[420px] overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4 text-sm leading-relaxed text-[var(--text)]">
-          {answer || "…セッション開始後、ここにストリーミングで溜まります"}
+      <section
+        className="copilot-card animate-fade-rise p-5 md:p-6"
+        style={staggerStyle(3)}
+      >
+        <div className="flex flex-wrap items-start gap-3">
+          <span className="step-badge shrink-0">4</span>
+          <div>
+            <h2 className="font-display text-lg font-semibold text-[var(--text)]">
+              回答案
+            </h2>
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              ストリーミングで追記されます。
+            </p>
+          </div>
+        </div>
+        <pre className="copilot-input mt-4 max-h-[min(420px,50vh)] overflow-auto whitespace-pre-wrap text-[13px] leading-relaxed md:text-sm">
+          {answer || "セッション開始後、ここに表示されます。"}
         </pre>
         <button
           type="button"
           onClick={() => setAnswer("")}
-          className="mt-2 text-xs text-[var(--muted)] underline"
+          className="mt-3 text-xs text-[var(--muted)] underline decoration-[var(--border)] underline-offset-4 transition hover:text-[var(--text)]"
         >
           回答欄をクリア
         </button>
       </section>
 
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)]/60 p-4">
-        <h2 className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
+      <section
+        className="copilot-card animate-fade-rise border-dashed opacity-95 p-4 md:p-5"
+        style={staggerStyle(4)}
+      >
+        <h2 className="font-display text-xs font-semibold tracking-wider text-[var(--muted)]">
           ログ
         </h2>
-        <pre className="mt-2 max-h-40 overflow-auto font-mono text-[11px] text-[var(--muted)]">
+        <pre className="mt-3 max-h-36 overflow-auto font-mono text-[10px] leading-snug text-[var(--muted)]">
           {log.length ? log.join("\n") : "—"}
         </pre>
       </section>
