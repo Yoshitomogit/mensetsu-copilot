@@ -6,7 +6,9 @@
     "dev": "concurrently -k \"npm run dev:next\" \"npm run dev:live\"",
     "dev:next": "next dev",
     "dev:live": "tsx watch server/live-proxy.ts",
+    "clean": "rm -rf .next",
     "build": "next build",
+    "build:clean": "npm run clean && next build",
     "start": "next start",
     "lint": "eslint"
   },

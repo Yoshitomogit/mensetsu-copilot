@@ -31,6 +31,28 @@ npm run dev
 | `npm run dev:next` | Next のみ |
 | `npm run dev:live` | プロキシのみ |
 | `npm run build` | 本番ビルド |
+| `npm run clean` | `.next` を削除（ビルドキャッシュ不整合の修復に使用） |
+| `npm run build:clean` | `clean` のあと `next build` |
+
+## トラブルシュート
+
+### `Cannot find module './586.js'` などランタイムでチャンクが見つからない
+
+`.next` のキャッシュと実体のズレが原因のことが多いです。
+
+```bash
+npm run clean
+npm run dev
+```
+
+本番起動（`next start`）の前に不整合が出た場合は次でから作り直します。
+
+```bash
+npm run build:clean
+npm start
+```
+
+コード変更や `npm install` のあとに古い `npm start` を動かし続けていると起きやすいです。**必ず同じ `.next` に対応したビルドを取ってから** `next start` してください。
 
 ## ライセンス・注意
 
