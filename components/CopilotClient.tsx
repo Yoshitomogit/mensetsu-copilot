@@ -27,12 +27,18 @@ export function CopilotClient() {
   const [log, setLog] = useState<string[]>([]);
   const [micOn, setMicOn] = useState(false);
   const [briefError, setBriefError] = useState<string | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** startSession 内で同期的に参照する（OPEN でも session_ready 前は false のことがある） */
+  const sessionActiveRef = useRef(false);
   const micOnRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  /** Strict Mode 開発時の「疑似アンマウント」では Live を切らない（0ms 後にキャンセル） */
+  const teardownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const appendLog = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString("ja-JP");
@@ -100,6 +106,10 @@ export function CopilotClient() {
   }, []);
 
   const stopSession = useCallback(() => {
+    if (connectTimerRef.current) {
+      clearTimeout(connectTimerRef.current);
+      connectTimerRef.current = null;
+    }
     stopMic();
     try {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -111,18 +121,87 @@ export function CopilotClient() {
     wsRef.current?.close();
     wsRef.current = null;
     setSessionActive(false);
+    sessionActiveRef.current = false;
   }, [stopMic]);
 
+  useEffect(() => {
+    sessionActiveRef.current = sessionActive;
+  }, [sessionActive]);
+
   const startSession = () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      appendLog("既に接続中です");
-      return;
+    const existing = wsRef.current;
+    if (existing) {
+      const rs = existing.readyState;
+      if (rs === WebSocket.CONNECTING) {
+        appendLog("接続処理中です。完了をお待ちください");
+        return;
+      }
+      if (rs === WebSocket.CLOSING) {
+        appendLog("切断処理中です。少し待ってから再度「Live セッション開始」を押してください");
+        return;
+      }
+      if (rs === WebSocket.OPEN) {
+        if (sessionActiveRef.current) {
+          appendLog("既に接続中です");
+          return;
+        }
+        appendLog(
+          "WebSocket は開いたままですが Live が未確立です。再接続します（前回は init 失敗や応答欠落の可能性があります）",
+        );
+        if (connectTimerRef.current) {
+          clearTimeout(connectTimerRef.current);
+          connectTimerRef.current = null;
+        }
+        stopMic();
+        try {
+          existing.close();
+        } catch {
+          /* ignore */
+        }
+        wsRef.current = null;
+        setSessionActive(false);
+        sessionActiveRef.current = false;
+      }
+      if (rs === WebSocket.CLOSED) {
+        wsRef.current = null;
+      }
     }
+
+    setLiveError(null);
     setAnswer("");
-    const ws = new WebSocket(liveWsUrl());
+    const url = liveWsUrl();
+    appendLog(`WebSocket 接続試行: ${url}`);
+
+    if (connectTimerRef.current) {
+      clearTimeout(connectTimerRef.current);
+      connectTimerRef.current = null;
+    }
+
+    const ws = new WebSocket(url);
     wsRef.current = ws;
 
+    connectTimerRef.current = setTimeout(() => {
+      connectTimerRef.current = null;
+      if (ws.readyState !== WebSocket.OPEN) {
+        const msg =
+          "WebSocket が開きませんでした。ターミナルに「[live-proxy] ws://localhost:3001」が表示されているか確認し、**`npm run dev`**（Next と Live プロキシの同時起動）で起動してください。`npm run dev:next` だけでは Live は使えません。";
+        setLiveError(msg);
+        appendLog(msg);
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        if (wsRef.current === ws) wsRef.current = null;
+      }
+    }, 12_000);
+
     ws.onopen = () => {
+      if (connectTimerRef.current) {
+        clearTimeout(connectTimerRef.current);
+        connectTimerRef.current = null;
+      }
+      appendLog("WebSocket 接続済み。Gemini Live へ init を送信中…");
       ws.send(
         JSON.stringify({
           type: "init",
@@ -137,9 +216,17 @@ export function CopilotClient() {
         const data = JSON.parse(ev.data as string) as Record<string, unknown>;
         if (data.type === "status") {
           appendLog(`status: ${String(data.status)}`);
-          if (data.status === "session_ready") setSessionActive(true);
+          if (data.status === "session_ready") {
+            setSessionActive(true);
+            sessionActiveRef.current = true;
+            setLiveError(null);
+          }
           if (data.status === "closed" || data.status === "live_close") {
             setSessionActive(false);
+            sessionActiveRef.current = false;
+            if (data.status === "live_close" && data.reason) {
+              appendLog(`Live 終了: ${String(data.reason)}`);
+            }
           }
         } else if (data.type === "live") {
           if (typeof data.modelText === "string" && data.modelText) {
@@ -156,18 +243,35 @@ export function CopilotClient() {
             setAnswer((prev) => (prev.endsWith("\n\n") ? prev : prev + "\n\n"));
           }
         } else if (data.type === "error") {
-          appendLog(`APIエラー: ${String(data.message)}`);
+          const em = String(data.message ?? "不明なエラー");
+          setLiveError(em);
+          appendLog(`APIエラー: ${em}`);
         }
       } catch {
         appendLog(`受信: ${String(ev.data)}`);
       }
     };
 
-    ws.onerror = () => appendLog("WebSocket エラー");
-    ws.onclose = () => {
+    ws.onerror = () => {
+      if (connectTimerRef.current) {
+        clearTimeout(connectTimerRef.current);
+        connectTimerRef.current = null;
+      }
+      const msg =
+        "WebSocket でエラーが発生しました（接続拒否・タイムアウトなど）。`npm run dev` を実行しているターミナルに [live-proxy] の行があるか確認してください。";
+      setLiveError(msg);
+      appendLog(msg);
+    };
+
+    ws.onclose = (ev) => {
+      if (connectTimerRef.current) {
+        clearTimeout(connectTimerRef.current);
+        connectTimerRef.current = null;
+      }
       setSessionActive(false);
-      appendLog("WebSocket 切断");
-      wsRef.current = null;
+      sessionActiveRef.current = false;
+      appendLog(`WebSocket 切断 (code=${ev.code}${ev.reason ? `, ${ev.reason}` : ""})`);
+      if (wsRef.current === ws) wsRef.current = null;
     };
   };
 
@@ -243,8 +347,22 @@ export function CopilotClient() {
   };
 
   useEffect(() => {
-    return () => {
+    if (teardownTimerRef.current !== null) {
+      clearTimeout(teardownTimerRef.current);
+      teardownTimerRef.current = null;
+    }
+
+    const onPageHide = () => {
       stopSession();
+    };
+    window.addEventListener("pagehide", onPageHide);
+
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      teardownTimerRef.current = setTimeout(() => {
+        teardownTimerRef.current = null;
+        stopSession();
+      }, 0);
     };
   }, [stopSession]);
 
@@ -346,6 +464,22 @@ export function CopilotClient() {
             {sessionActive ? "接続中" : "未接続"}
           </span>
         </div>
+        {liveError ? (
+          <p
+            className="mt-4 rounded-lg border border-[var(--danger)]/50 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[#f0c4c4]"
+            role="alert"
+          >
+            {liveError}
+          </p>
+        ) : null}
+        <p className="mt-3 text-[11px] leading-relaxed text-[var(--muted)]">
+          Live は <code className="text-[var(--accent)]">ws://localhost:3001</code>{" "}
+          のプロキシ経由です。<strong className="text-[var(--text)]">
+            npm run dev
+          </strong>{" "}
+          で Next とプロキシを同時起動してください（.env.local の API
+          キーはプロキシ側でも読み込みます）。
+        </p>
       </section>
 
       <section

@@ -1,16 +1,35 @@
 /**
  * ブラウザからの WebSocket を受け、Gemini Live API に中継するローカルプロキシ。
  * API キーはこのプロセス環境変数のみに置く（ブラウザに出さない）。
+ *
+ * 注意: Next.js は .env.local を自動読込するが、このファイルは別プロセスで動くため、
+ * 起動時に dotenv で .env.local / .env を読み込む。
  */
-import { WebSocketServer, type WebSocket } from "ws";
+import { config as loadEnv } from "dotenv";
+import { resolve } from "node:path";
 import { GoogleGenAI, Modality, type LiveServerMessage } from "@google/genai";
+import { WebSocketServer, type WebSocket } from "ws";
+
+loadEnv({ path: resolve(process.cwd(), ".env.local") });
+loadEnv({ path: resolve(process.cwd(), ".env") });
 
 const PORT = Number(process.env.LIVE_PROXY_PORT ?? 3001);
-const apiKey = process.env.GEMINI_API_KEY;
-const MODEL = process.env.GEMINI_LIVE_MODEL ?? "gemini-2.0-flash-live-001";
+const apiKey = process.env.GEMINI_API_KEY?.trim();
+const MODEL = process.env.GEMINI_LIVE_MODEL?.trim() ?? "gemini-2.0-flash-live-001";
+
+/**
+ * gemini-3.1-flash-live-preview 等のネイティブ音声 Live モデルは responseModalities: [TEXT] 非対応で、
+ * 接続直後に 1011 "Internal error encountered" で閉じる（公式・SDK issue 参照）。
+ * 既定: AUDIO + outputAudioTranscription でテキストを画面に出す。
+ * 2.0 系など TEXT 直出しが動くモデルだけ使う場合は GEMINI_LIVE_TEXT_MODALITY=true
+ */
+const useLiveTextModality =
+  String(process.env.GEMINI_LIVE_TEXT_MODALITY ?? "").toLowerCase() === "true";
 
 if (!apiKey) {
-  console.error("[live-proxy] GEMINI_API_KEY が未設定です。.env.local を参照してください。");
+  console.error(
+    "[live-proxy] GEMINI_API_KEY が未設定です。.env.local にキーを書き、プロキシを再起動してください。",
+  );
   process.exit(1);
 }
 
@@ -63,7 +82,9 @@ function forwardModelMessage(ws: WebSocket, message: LiveServerMessage) {
 }
 
 const wss = new WebSocketServer({ port: PORT });
-console.log(`[live-proxy] ws://localhost:${PORT} (model: ${MODEL})`);
+console.log(
+  `[live-proxy] ws://localhost:${PORT} (model: ${MODEL}, reply: ${useLiveTextModality ? "TEXT" : "AUDIO+transcription"})`,
+);
 
 wss.on("connection", (ws) => {
   let session: Awaited<ReturnType<typeof ai.live.connect>> | null = null;
@@ -91,31 +112,46 @@ wss.on("connection", (ws) => {
         const knowledgeBrief = String(msg.knowledgeBrief ?? "");
         const useInputTx = Boolean(msg.enableInputTranscription);
 
-        session = await ai.live.connect({
-          model: MODEL,
-          callbacks: {
-            onopen: () => send(ws, { type: "status", status: "live_open" }),
-            onmessage: (m) => forwardModelMessage(ws, m),
-            onerror: (e) =>
-              send(ws, {
-                type: "error",
-                message: e?.message ?? String(e),
-              }),
-            onclose: (e) =>
-              send(ws, {
-                type: "status",
-                status: "live_close",
-                reason: e?.reason ?? "",
-              }),
-          },
-          config: {
-            responseModalities: [Modality.TEXT],
-            systemInstruction: buildSystemInstruction(knowledgeBrief),
-            ...(useInputTx ? { inputAudioTranscription: {} } : {}),
-          },
-        });
+        try {
+          session = await ai.live.connect({
+            model: MODEL,
+            callbacks: {
+              onopen: () => send(ws, { type: "status", status: "live_open" }),
+              onmessage: (m) => forwardModelMessage(ws, m),
+              onerror: (e) =>
+                send(ws, {
+                  type: "error",
+                  message: e?.message ?? String(e),
+                }),
+              onclose: (e) =>
+                send(ws, {
+                  type: "status",
+                  status: "live_close",
+                  reason: e?.reason ?? "",
+                }),
+            },
+            config: {
+              responseModalities: useLiveTextModality
+                ? [Modality.TEXT]
+                : [Modality.AUDIO],
+              ...(!useLiveTextModality
+                ? { outputAudioTranscription: {} }
+                : {}),
+              systemInstruction: buildSystemInstruction(knowledgeBrief),
+              ...(useInputTx ? { inputAudioTranscription: {} } : {}),
+            },
+          });
 
-        send(ws, { type: "status", status: "session_ready" });
+          send(ws, { type: "status", status: "session_ready" });
+        } catch (e) {
+          session = null;
+          const errMsg = e instanceof Error ? e.message : String(e);
+          console.error("[live-proxy] live.connect failed", e);
+          send(ws, {
+            type: "error",
+            message: `Gemini Live 接続に失敗しました: ${errMsg}（モデル: ${MODEL}。.env.local の GEMINI_LIVE_MODEL を公式の Live 対応モデルに更新してください。）`,
+          });
+        }
         return;
       }
 

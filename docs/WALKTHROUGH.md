@@ -51,6 +51,8 @@ npm run dev
 
 ターミナルに `[live-proxy] ws://localhost:3001` と出ていればプロキシは正常です。
 
+**Live（マイク）を使う場合**は、Next だけ起動する `npm run dev:next` ではなく、**必ず `npm run dev`（Next + Live プロキシ同時起動）**を使ってください。プロキシが立っていないと「ライブセッションを開始」しても接続できません。
+
 ## 3. 画面の流れ（推奨操作順）
 
 ### 3.1 準備ドキュメントを貼る
@@ -110,7 +112,15 @@ npm run dev
 ブラウザ  ←→  http://localhost:3000/api/brief  ←→  Gemini generateContent（要約）
 ```
 
-## 5. 関連ドキュメント
+## 5. トラブルシューティング
+
+| 症状 | 確認すること |
+|------|----------------|
+| 「ライブセッションを開始」しても反応しない | `npm run dev` で **Next と Live プロキシの両方**が起動しているか。ターミナルに `[live-proxy]` が出るか。 |
+| 画面上に Live の接続エラー | `.env.local` に `GEMINI_API_KEY` があるか。`GEMINI_LIVE_MODEL` が [利用可能なモデル名](https://ai.google.dev/gemini-api/docs/models) か。 |
+| 要約だけ動く | `/api/brief` は Next のプロセスだけで動く。Live は **3001 の WebSocket プロキシ**が必須。 |
+
+## 6. 関連ドキュメント
 
 - [面談コパイロット実装計画.md](./面談コパイロット実装計画.md) … 背景・方針・リスク
 - [Gemini Live API](https://ai.google.dev/gemini-api/docs/live)

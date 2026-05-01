@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently -k \"npm run dev:next\" \"npm run dev:live\"",
+    "dev": "sh -c 'node scripts/open-when-ready.js & concurrently -k \"npm run dev:next\" \"npm run dev:live\"'",
     "dev:next": "next dev",
     "dev:live": "tsx watch server/live-proxy.ts",
     "clean": "rm -rf .next",
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
+    "dotenv": "^17.4.2",
     "next": "15.5.9",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
