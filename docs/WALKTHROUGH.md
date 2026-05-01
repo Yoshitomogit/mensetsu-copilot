@@ -10,9 +10,20 @@
 
 ## 1. リポジトリと環境変数
 
+**プロジェクトのルート**は、お手元では **`面接用アプリ` フォルダ**です（パス例: `…/ポートフォリオ/面接用アプリ`）。以降の `npm` コマンドは、このフォルダをカレントディレクトリにして実行してください。
+
+初回だけ GitHub から取る場合は、既定ではフォルダ名が `mensetsu-copilot` になります。
+
 ```bash
 git clone https://github.com/Yoshitomogit/mensetsu-copilot.git
-cd 面接用アプリ   # またはクローン先ディレクトリ名
+cd mensetsu-copilot
+cp .env.example .env.local
+```
+
+すでに **`面接用アプリ`** にコードがある場合は、そのフォルダへ移動してから同様にします。
+
+```bash
+cd "/Users/…/ポートフォリオ/面接用アプリ"   # ご自身のパスに合わせる
 cp .env.example .env.local
 ```
 

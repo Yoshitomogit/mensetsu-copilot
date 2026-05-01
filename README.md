@@ -11,6 +11,8 @@
 
 ## クイックスタート
 
+プロジェクトルート（お手元では **`面接用アプリ` フォルダ**）で実行します。
+
 ```bash
 cp .env.example .env.local
 # .env.local に GEMINI_API_KEY を設定
