@@ -1,0 +1,34 @@
+{
+  "name": "mensetsu-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev:next\" \"npm run dev:live\"",
+    "dev:next": "next dev",
+    "dev:live": "tsx watch server/live-proxy.ts",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@google/genai": "^1.30.0",
+    "next": "15.5.9",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.5",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/ws": "^8.5.13",
+    "concurrently": "^9.1.2",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.9",
+    "tailwindcss": "^4",
+    "tsx": "^4.19.3",
+    "typescript": "^5"
+  }
+}
