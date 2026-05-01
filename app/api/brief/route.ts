@@ -1,61 +1,95 @@
-import { GoogleGenAI, type GenerateContentResponse } from "@google/genai";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
+/** キャッシュや古い応答の混線を避ける */
+export const dynamic = "force-dynamic";
 
-/** response.text が空でも、candidates から本文を拾う */
-function extractBriefText(response: GenerateContentResponse): string {
-  const direct = response.text?.trim();
-  if (direct) return direct;
+/** response.text / candidates から本文を拾う（型は API 応答に依存するため寛容に扱う） */
+function extractBriefText(response: unknown): string {
+  if (!response || typeof response !== "object") return "";
 
-  const parts = response.candidates?.[0]?.content?.parts;
-  if (!parts?.length) return "";
+  try {
+    const r = response as {
+      text?: string;
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+      }>;
+    };
 
-  return parts
-    .map((p) => ("text" in p && typeof p.text === "string" ? p.text : ""))
-    .join("")
-    .trim();
+    const direct = typeof r.text === "string" ? r.text.trim() : "";
+    if (direct) return direct;
+
+    const parts = r.candidates?.[0]?.content?.parts;
+    if (!parts?.length) return "";
+
+    return parts
+      .map((p) => (typeof p?.text === "string" ? p.text : ""))
+      .join("")
+      .trim();
+  } catch {
+    return "";
+  }
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "GEMINI_API_KEY が設定されていません。.env.local にキーを書き、dev サーバーを再起動してください。",
-      },
-      { status: 500 },
-    );
-  }
+  let model = process.env.GEMINI_BRIEF_MODEL?.trim() || "gemini-2.5-flash";
 
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "JSON が不正です" }, { status: 400 });
-  }
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    if (!apiKey) {
+      return NextResponse.json(
+        {
+          error:
+            "GEMINI_API_KEY が設定されていません。.env.local にキーを書き、ターミナルで dev サーバーを停止してから `npm run dev` をやり直してください。",
+        },
+        { status: 500 },
+      );
+    }
 
-  const rawText =
-    typeof body === "object" &&
-    body !== null &&
-    "rawText" in body &&
-    typeof (body as { rawText: unknown }).rawText === "string"
-      ? (body as { rawText: string }).rawText
-      : null;
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch (e) {
+      return NextResponse.json(
+        {
+          error: `リクエスト本文が JSON として読めませんでした: ${e instanceof Error ? e.message : String(e)}`,
+        },
+        { status: 400 },
+      );
+    }
 
-  if (!rawText?.trim()) {
-    return NextResponse.json({ error: "rawText が必要です" }, { status: 400 });
-  }
+    const rawText =
+      typeof body === "object" &&
+      body !== null &&
+      "rawText" in body &&
+      typeof (body as { rawText: unknown }).rawText === "string"
+        ? (body as { rawText: string }).rawText
+        : null;
 
-  const model =
-    process.env.GEMINI_BRIEF_MODEL?.trim() || "gemini-2.5-flash";
+    if (!rawText?.trim()) {
+      return NextResponse.json({ error: "rawText が必要です" }, { status: 400 });
+    }
 
-  const ai = new GoogleGenAI({ apiKey });
-  const clipped = rawText.slice(0, 200_000);
+    model = process.env.GEMINI_BRIEF_MODEL?.trim() || "gemini-2.5-flash";
 
-  const prompt = `以下は面接・面談用の下書き・関連メモの全文です。
+    let GoogleGenAI: typeof import("@google/genai").GoogleGenAI;
+    try {
+      ({ GoogleGenAI } = await import("@google/genai"));
+    } catch (e) {
+      console.error("[api/brief] import @google/genai failed", e);
+      return NextResponse.json(
+        {
+          error: `Gemini SDK の読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}。node_modules を再インストールしてください（rm -rf node_modules && npm install）。`,
+        },
+        { status: 500 },
+      );
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+    const clipped = rawText.slice(0, 200_000);
+
+    const prompt = `以下は面接・面談用の下書き・関連メモの全文です。
 これを Live API の system instruction に埋め込めるよう、日本語で **8000 文字以内**の「面談ナレッジ」に再構成してください。
 
 構成（見出し付き）:
@@ -70,13 +104,30 @@ export async function POST(request: Request) {
 ${clipped}
 `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-    });
+    let response: unknown;
+    try {
+      response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+      });
+    } catch (e) {
+      console.error("[api/brief] generateContent", e);
+      const message = e instanceof Error ? e.message : String(e);
+      return NextResponse.json(
+        {
+          error: `${message}（モデル: ${model}。GEMINI_BRIEF_MODEL を gemini-3-flash-preview 等に変更して試してください。）`,
+        },
+        { status: 502 },
+      );
+    }
 
-    const block = response.promptFeedback?.blockReason;
+    const block =
+      response &&
+      typeof response === "object" &&
+      "promptFeedback" in response &&
+      (response as { promptFeedback?: { blockReason?: unknown } })
+        .promptFeedback?.blockReason;
+
     if (block) {
       return NextResponse.json(
         {
@@ -88,24 +139,33 @@ ${clipped}
 
     const brief = extractBriefText(response);
     if (!brief) {
-      const finish = response.candidates?.[0]?.finishReason;
+      const finish =
+        response &&
+        typeof response === "object" &&
+        "candidates" in response &&
+        Array.isArray((response as { candidates?: unknown[] }).candidates)
+          ? (response as { candidates: Array<{ finishReason?: unknown }> })
+              .candidates[0]?.finishReason
+          : undefined;
+
       return NextResponse.json(
         {
-          error: `モデルからテキストが取得できませんでした。finishReason: ${finish ?? "不明"}。モデル ${model} が利用可能か（API キー・リージョン・提供終了）を確認し、必要なら .env.local の GEMINI_BRIEF_MODEL を変更してください。`,
+          error: `モデルからテキストが取得できませんでした。finishReason: ${finish ?? "不明"}。モデル ${model} が利用可能か確認し、GEMINI_BRIEF_MODEL を変更してください。`,
         },
         { status: 502 },
       );
     }
 
     return NextResponse.json({ brief, modelUsed: model });
-  } catch (e) {
-    console.error("[api/brief]", e);
-    const message = e instanceof Error ? e.message : String(e);
+  } catch (fatal) {
+    console.error("[api/brief] fatal", fatal);
     return NextResponse.json(
       {
-        error: `${message}（モデル: ${model}。gemini-2.0-flash は提供終了している場合があります。GEMINI_BRIEF_MODEL=gemini-2.5-flash または gemini-3-flash-preview などを試してください。）`,
+        error:
+          (fatal instanceof Error ? fatal.message : String(fatal)) +
+          "（予期しないエラー。ターミナルのサーバーログを確認し、`npm run clean && npm run dev` を試してください。）",
       },
-      { status: 502 },
+      { status: 500 },
     );
   }
 }

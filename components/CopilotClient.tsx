@@ -62,6 +62,11 @@ export function CopilotClient() {
       }
 
       if (!res.ok) {
+        if (rawBody.trim().startsWith("<!DOCTYPE") || rawBody.trim().startsWith("<html")) {
+          throw new Error(
+            "サーバーが JSON ではなく HTML エラーページを返しました。ターミナルで Next の赤いエラーを確認し、`npm run clean` のあと `npm run dev` を再起動してください。",
+          );
+        }
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
 
