@@ -11,7 +11,7 @@
 ## 1. リポジトリと環境変数
 
 ```bash
-git clone <このリポジトリのURL>
+git clone https://github.com/Yoshitomogit/mensetsu-copilot.git
 cd 面接用アプリ   # またはクローン先ディレクトリ名
 cp .env.example .env.local
 ```

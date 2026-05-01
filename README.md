@@ -1,5 +1,7 @@
 # 面談コパイロット（Gemini Live API）
 
+**リポジトリ**: https://github.com/Yoshitomogit/mensetsu-copilot
+
 面接・面談中に、**準備ドキュメント**を根拠として **Gemini Live API** へリアルタイムに入力し、**回答のたたき台**をテキストで受け取るローカル向け Web アプリです。
 
 - **Next.js 15**（UI・`/api/brief` でのナレッジ要約）
